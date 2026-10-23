@@ -1,0 +1,32 @@
+name: Security CI
+on:
+  push:
+  pull_request:
+jobs:
+  test-and-scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Unit and HTTP integration tests
+        run: python -m unittest discover -s tests -v
+      - name: Install Bandit
+        run: python -m pip install 'bandit==1.8.6'
+      - name: SAST (Bandit)
+        run: |
+          mkdir -p reports
+          bandit -r src -f json -o reports/bandit.json
+      - name: SCA (OWASP Dependency-Check)
+        run: |
+          mkdir -p reports
+          docker run --rm -v "$PWD:/src" -v "$PWD/reports:/report" owasp/dependency-check:latest \
+            --scan /src --out /report --format HTML --format JSON --project Work1 --failOnCVSS 7
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: security-reports
+          path: reports/

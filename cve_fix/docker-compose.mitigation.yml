@@ -1,0 +1,6 @@
+# Run from vulhub/struts2/s2-057 with this overlay copied into that directory.
+# WARNING: this is a configuration-level workaround, not the vendor security update.
+services:
+  struts2:
+    volumes:
+      - ./struts-actionchaining.xml:/usr/local/tomcat/webapps/ROOT/WEB-INF/classes/struts-actionchaining.xml:ro
