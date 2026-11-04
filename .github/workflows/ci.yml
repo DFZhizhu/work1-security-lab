@@ -21,15 +21,13 @@ jobs:
           mkdir -p reports
           bandit -r src -f json -o reports/bandit.json
       - name: SCA (OWASP Dependency-Check)
-        env:
-          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
         run: |
           mkdir -p reports
           docker run --rm \
-            -e NVD_API_KEY \
             -v "$PWD:/src" \
             -v "$PWD/reports:/report" \
             owasp/dependency-check:latest \
+            --nvdApiKey "${{ secrets.NVD_API_KEY }}" \
             --scan /src --out /report --format HTML --format JSON --project Work1 --failOnCVSS 7
       - uses: actions/upload-artifact@v4
         if: always()
