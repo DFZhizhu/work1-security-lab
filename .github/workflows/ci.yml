@@ -1,36 +1,112 @@
+
 name: Security CI
+
 on:
   push:
   pull_request:
+  workflow_dispatch:
+
 jobs:
   test-and-scan:
     runs-on: ubuntu-latest
+
     permissions:
       contents: read
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      # 1. Checkout source code
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 2. Set up Python
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+
+      # 3. Unit and integration tests
       - name: Unit and HTTP integration tests
-        run: python -m unittest discover -s tests -v
+        run: |
+          python -m unittest discover -s tests -v
+
+      # 4. Install Bandit
       - name: Install Bandit
-        run: python -m pip install 'bandit==1.8.6'
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install 'bandit==1.8.6'
+
+      # 5. Static Application Security Testing
       - name: SAST (Bandit)
+        id: bandit
+        continue-on-error: true
         run: |
           mkdir -p reports
-          bandit -r src -f json -o reports/bandit.json
+          bandit -r src \
+            -f json \
+            -o reports/bandit.json
+
+      # 6. Cache dependency-check database
+      - name: Cache Dependency-Check data
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/dependency-check-data
+          key: dependency-check-nvd-${{ runner.os }}-v1
+          restore-keys: |
+            dependency-check-nvd-${{ runner.os }}-
+
+      # 7. Software Composition Analysis
       - name: SCA (OWASP Dependency-Check)
+        id: dependency_check
+        continue-on-error: true
+        env:
+          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
         run: |
           mkdir -p reports
+          mkdir -p "${{ runner.temp }}/dependency-check-data"
+
+          if [ -z "$NVD_API_KEY" ]; then
+            echo "::error::NVD_API_KEY is missing"
+            exit 1
+          fi
+
           docker run --rm \
-            -v "$PWD:/src" \
+            -v "$PWD:/src:ro" \
             -v "$PWD/reports:/report" \
+            -v "${{ runner.temp }}/dependency-check-data:/usr/share/dependency-check/data" \
             owasp/dependency-check:latest \
-            --nvdApiKey "${{ secrets.NVD_API_KEY }}" \
-            --scan /src --out /report --format HTML --format JSON --project Work1 --failOnCVSS 7
-      - uses: actions/upload-artifact@v4
+            --nvdApiKey "$NVD_API_KEY" \
+            --scan /src \
+            --out /report \
+            --format HTML \
+            --format JSON \
+            --project Work1 \
+            --failOnCVSS 7
+
+      # 8. Upload security reports
+      - name: Upload security reports
         if: always()
+        uses: actions/upload-artifact@v4
         with:
           name: security-reports
           path: reports/
+          if-no-files-found: warn
+
+      # 9. Enforce security checks
+      - name: Check security scan results
+        if: always()
+        env:
+          BANDIT_OUTCOME: ${{ steps.bandit.outcome }}
+          SCA_OUTCOME: ${{ steps.dependency_check.outcome }}
+        run: |
+          if [ "$BANDIT_OUTCOME" != "success" ]; then
+            echo "::error::Bandit scan failed or found issues"
+            exit 1
+          fi
+
+          if [ "$SCA_OUTCOME" != "success" ]; then
+            echo "::error::Dependency-Check failed or found vulnerabilities above the threshold"
+            exit 1
+          fi
+
+          echo "All security checks passed."
+
