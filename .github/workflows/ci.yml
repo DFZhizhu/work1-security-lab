@@ -1,4 +1,5 @@
 
+
 name: Security CI
 
 on:
@@ -9,22 +10,26 @@ on:
 jobs:
   test-and-scan:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
 
     permissions:
       contents: read
 
+    env:
+      DC_VERSION: "12.2.2"
+
     steps:
-      # 1. Checkout source code
+      # 1. Checkout
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. Set up Python
+      # 2. Python
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: "3.12"
 
-      # 3. Unit and integration tests
+      # 3. Tests
       - name: Unit and HTTP integration tests
         run: |
           python -m unittest discover -s tests -v
@@ -32,10 +37,9 @@ jobs:
       # 4. Install Bandit
       - name: Install Bandit
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install 'bandit==1.8.6'
+          python -m pip install bandit==1.8.6
 
-      # 5. Static Application Security Testing
+      # 5. Bandit SAST
       - name: SAST (Bandit)
         id: bandit
         continue-on-error: true
@@ -45,44 +49,108 @@ jobs:
             -f json \
             -o reports/bandit.json
 
-      # 6. Cache dependency-check database
-      - name: Cache Dependency-Check data
-        uses: actions/cache@v4
+      # 6. Install Java for Dependency-Check CLI
+      - name: Set up Java
+        uses: actions/setup-java@v4
         with:
-          path: ${{ runner.temp }}/dependency-check-data
-          key: dependency-check-nvd-${{ runner.os }}-v1
-          restore-keys: |
-            dependency-check-nvd-${{ runner.os }}-
+          distribution: temurin
+          java-version: "17"
 
-      # 7. Software Composition Analysis
-      - name: SCA (OWASP Dependency-Check)
-        id: dependency_check
-        continue-on-error: true
+      # 7. Restore CLI cache
+      - name: Restore Dependency-Check CLI
+        id: cli_cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/dc-tool
+          key: dc-cli-12.2.2-linux-v1
+
+      # 8. Download CLI only when needed
+      - name: Install Dependency-Check CLI
+        if: steps.cli_cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p "$RUNNER_TEMP/dc-tool"
+
+          curl -fL \
+            --retry 3 \
+            --connect-timeout 30 \
+            "https://github.com/dependency-check/DependencyCheck/releases/download/v${DC_VERSION}/dependency-check-${DC_VERSION}-release.zip" \
+            -o "$RUNNER_TEMP/dc.zip"
+
+          unzip -q "$RUNNER_TEMP/dc.zip" \
+            -d "$RUNNER_TEMP/dc-tool"
+
+          chmod +x \
+            "$RUNNER_TEMP/dc-tool/dependency-check/bin/dependency-check.sh"
+
+      # 9. Save CLI cache immediately
+      - name: Save Dependency-Check CLI
+        if: steps.cli_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/dc-tool
+          key: dc-cli-12.2.2-linux-v1
+
+      # 10. Verify CLI version
+      - name: Verify Dependency-Check version
+        run: |
+          "$RUNNER_TEMP/dc-tool/dependency-check/bin/dependency-check.sh" \
+            --version
+
+      # 11. Restore NVD database cache
+      - name: Restore NVD database
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/dc-data
+          key: dc-nvd-12-2-2-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            dc-nvd-12-2-2-v1-
+
+      # 12. Verify NVD API Key
+      - name: Verify NVD API Key
         env:
           NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
         run: |
-          mkdir -p reports
-          mkdir -p "${{ runner.temp }}/dependency-check-data"
-
           if [ -z "$NVD_API_KEY" ]; then
             echo "::error::NVD_API_KEY is missing"
             exit 1
           fi
+          echo "NVD API Key is available."
 
-          docker run --rm \
-            -v "$PWD:/src:ro" \
-            -v "$PWD/reports:/report" \
-            -v "${{ runner.temp }}/dependency-check-data:/usr/share/dependency-check/data" \
-            owasp/dependency-check:latest \
-            --nvdApiKey "$NVD_API_KEY" \
-            --scan /src \
-            --out /report \
+      # 13. OWASP Dependency-Check SCA
+      - name: SCA (OWASP Dependency-Check)
+        id: sca
+        continue-on-error: true
+        timeout-minutes: 45
+        env:
+          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+        run: |
+          mkdir -p reports
+          mkdir -p "$RUNNER_TEMP/dc-data"
+
+          echo "Starting Dependency-Check CLI"
+          echo "Using cached NVD data if available"
+
+          "$RUNNER_TEMP/dc-tool/dependency-check/bin/dependency-check.sh" \
+            --project Work1 \
+            --scan "$GITHUB_WORKSPACE" \
+            --out "$GITHUB_WORKSPACE/reports" \
+            --data "$RUNNER_TEMP/dc-data" \
             --format HTML \
             --format JSON \
-            --project Work1 \
+            --nvdApiKey "$NVD_API_KEY" \
+            --nvdValidForHours 24 \
+            --disableKnownExploited \
             --failOnCVSS 7
 
-      # 8. Upload security reports
+      # 14. Save database after a completed scan
+      - name: Save NVD database cache
+        if: steps.sca.outcome == 'success' || hashFiles('reports/dependency-check-report.json') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/dc-data
+          key: dc-nvd-12-2-2-v1-${{ github.run_id }}-${{ github.run_attempt }}
+
+      # 15. Upload reports
       - name: Upload security reports
         if: always()
         uses: actions/upload-artifact@v4
@@ -91,20 +159,20 @@ jobs:
           path: reports/
           if-no-files-found: warn
 
-      # 9. Enforce security checks
-      - name: Check security scan results
+      # 16. Enforce security results
+      - name: Check security results
         if: always()
         env:
           BANDIT_OUTCOME: ${{ steps.bandit.outcome }}
-          SCA_OUTCOME: ${{ steps.dependency_check.outcome }}
+          SCA_OUTCOME: ${{ steps.sca.outcome }}
         run: |
           if [ "$BANDIT_OUTCOME" != "success" ]; then
-            echo "::error::Bandit scan failed or found issues"
+            echo "::error::Bandit found issues or failed"
             exit 1
           fi
 
           if [ "$SCA_OUTCOME" != "success" ]; then
-            echo "::error::Dependency-Check failed or found vulnerabilities above the threshold"
+            echo "::error::Dependency-Check found high severity vulnerabilities or failed"
             exit 1
           fi
 
