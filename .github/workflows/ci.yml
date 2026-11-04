@@ -1,5 +1,4 @@
 
-
 name: Security CI
 
 on:
@@ -42,6 +41,7 @@ jobs:
         continue-on-error: true
         run: |
           mkdir -p reports
+
           bandit -r src \
             -f json \
             -o reports/bandit.json
@@ -51,9 +51,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/dependency-check-data
-          key: dependency-check-nvd-${{ runner.os }}-v2
-          restore-keys: |
-            dependency-check-nvd-${{ runner.os }}-
+          key: dependency-check-nvd-${{ runner.os }}-12-2-2-v1
 
       # 7. Verify NVD API Key
       - name: Verify NVD API Key
@@ -71,7 +69,7 @@ jobs:
       - name: Check Dependency-Check version
         run: |
           docker run --rm \
-            owasp/dependency-check:latest \
+            owasp/dependency-check:12.2.2 \
             --version
 
       # 9. Software Composition Analysis
@@ -89,11 +87,13 @@ jobs:
             exit 1
           fi
 
+          echo "Starting OWASP Dependency-Check 12.2.2"
+
           docker run --rm \
             -v "$PWD:/src:ro" \
             -v "$PWD/reports:/report" \
             -v "${{ runner.temp }}/dependency-check-data:/usr/share/dependency-check/data" \
-            owasp/dependency-check:latest \
+            owasp/dependency-check:12.2.2 \
             --nvdApiKey "$NVD_API_KEY" \
             --scan /src \
             --out /report \
@@ -129,3 +129,4 @@ jobs:
           fi
 
           echo "All security checks passed."
+
