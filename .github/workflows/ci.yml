@@ -1,4 +1,5 @@
 
+
 name: Security CI
 
 on:
@@ -14,7 +15,7 @@ jobs:
       contents: read
 
     steps:
-      # 1. Checkout source code
+      # 1. Checkout repository
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -24,7 +25,7 @@ jobs:
         with:
           python-version: '3.12'
 
-      # 3. Unit and integration tests
+      # 3. Run unit and integration tests
       - name: Unit and HTTP integration tests
         run: |
           python -m unittest discover -s tests -v
@@ -45,16 +46,35 @@ jobs:
             -f json \
             -o reports/bandit.json
 
-      # 6. Cache dependency-check database
+      # 6. Cache Dependency-Check database
       - name: Cache Dependency-Check data
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/dependency-check-data
-          key: dependency-check-nvd-${{ runner.os }}-v1
+          key: dependency-check-nvd-${{ runner.os }}-v2
           restore-keys: |
             dependency-check-nvd-${{ runner.os }}-
 
-      # 7. Software Composition Analysis
+      # 7. Verify NVD API Key
+      - name: Verify NVD API Key
+        env:
+          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+        run: |
+          if [ -z "$NVD_API_KEY" ]; then
+            echo "::error::NVD_API_KEY is EMPTY or unavailable"
+            exit 1
+          fi
+
+          echo "NVD_API_KEY is available."
+
+      # 8. Check Dependency-Check version
+      - name: Check Dependency-Check version
+        run: |
+          docker run --rm \
+            owasp/dependency-check:latest \
+            --version
+
+      # 9. Software Composition Analysis
       - name: SCA (OWASP Dependency-Check)
         id: dependency_check
         continue-on-error: true
@@ -82,7 +102,7 @@ jobs:
             --project Work1 \
             --failOnCVSS 7
 
-      # 8. Upload security reports
+      # 10. Upload security reports
       - name: Upload security reports
         if: always()
         uses: actions/upload-artifact@v4
@@ -91,7 +111,7 @@ jobs:
           path: reports/
           if-no-files-found: warn
 
-      # 9. Enforce security checks
+      # 11. Enforce security checks
       - name: Check security scan results
         if: always()
         env:
@@ -109,4 +129,3 @@ jobs:
           fi
 
           echo "All security checks passed."
-
