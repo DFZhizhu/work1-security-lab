@@ -14,6 +14,14 @@ jobs:
       contents: read
 
     steps:
+
+      - name: Verify workflow version
+        run: |
+          echo "NEW WORKFLOW CONFIGURATION"
+          echo "Commit: $GITHUB_SHA"
+          echo "Branch: $GITHUB_REF"
+          echo "Dependency-Check image: 12.2.2"
+          
       # 1. Checkout repository
       - name: Checkout repository
         uses: actions/checkout@v4
